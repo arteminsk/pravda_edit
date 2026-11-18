@@ -147,7 +147,6 @@
 <body>
 
 <header>
-  <input type="password" id="gh-token" placeholder="GitHub Token (ghp_...)" style="width: 180px;">
   <input type="text" id="gh-repo" placeholder="owner/repo (напр. ivan/gazeta)" style="width: 180px;">
   <input type="text" id="img-path" placeholder="Путь к фото" value="nyt/1940s/1940/02/01/01.webp" style="width: 230px;">
   <input type="text" id="json-path" placeholder="Путь к JSON" value="nyt/1940s/1940/02/01/01.json" style="width: 230px;">
@@ -157,7 +156,6 @@
   <button onclick="resetView()" title="Вернуть масштаб и положение как при загрузке">⟲</button>
   <button id="btn-boxes" onclick="toggleBoxes()" title="Показывать все рамки или только активную">▭ Рамки: все</button>
   <span id="status">Готов к работе</span>
-  <button class="save" onclick="saveData()">💾 Сохранить в GitHub</button>
 </header>
 
 <main>
@@ -212,7 +210,7 @@
       localStorage.removeItem('json-path');
       localStorage.setItem('ocr-paths-v', PATHS_VERSION);
     }
-    ['gh-token', 'gh-repo', 'img-path', 'json-path'].forEach(id => {
+    ['gh-repo', 'img-path', 'json-path'].forEach(id => {
       if (localStorage.getItem(id)) document.getElementById(id).value = localStorage.getItem(id);
     });
     initImageControls();
@@ -245,33 +243,14 @@
 
   function markDirty() {
     isDirty = true;
-    setStatus('Есть несохранённые изменения');
+    setStatus('Изменения только в памяти браузера');
     scheduleDraft();
   }
 
-  function scheduleDraft() {
-    clearTimeout(draftTimer);
-    draftTimer = setTimeout(writeDraft, 500);
-  }
+  // Временный режим: изменения не записываются ни в GitHub, ни в localStorage.
+  function scheduleDraft() {}
 
-  // черновик: копия данных в памяти браузера (без токена), на случай сбоя или случайного закрытия
-  function writeDraft() {
-    if (!draftKey || !rawJsonData) return;
-    try {
-      const copy = JSON.parse(JSON.stringify(rawJsonData));
-      if (pendingNew) {
-        // новое, ещё не сохранённое поле в черновик не попадает
-        const i = blocks.indexOf(pendingNew);
-        if (i >= 0) {
-          const r = Array.isArray(copy) ? copy[0] : copy;
-          r.prunedResult.parsing_res_list.splice(i, 1);
-        }
-      }
-      localStorage.setItem(draftKey, JSON.stringify({ sha: currentSha, savedAt: Date.now(), data: copy }));
-    } catch (e) {
-      console.warn('Не удалось записать черновик', e);
-    }
-  }
+  function writeDraft() {}
 
   function clearDraft(key) {
     clearTimeout(draftTimer);
@@ -285,31 +264,8 @@
     blocks = rootObj.prunedResult.parsing_res_list;
   }
 
-  // если для этого файла есть черновик, предлагаем его восстановить
-  function offerDraft() {
-    let raw;
-    try { raw = localStorage.getItem(draftKey); } catch (e) { return false; }
-    if (!raw) return false;
-    try {
-      const d = JSON.parse(raw);
-      if (!d || !d.data) throw new Error('пустой черновик');
-      let msg = 'Найден несохранённый черновик от ' + new Date(d.savedAt).toLocaleString('ru-RU') + '.\n\n';
-      if (d.sha !== currentSha) {
-        msg += 'Внимание: файл на GitHub изменился после создания черновика, при сохранении эти изменения будут перезаписаны.\n\n';
-      }
-      msg += 'ОК: восстановить черновик.\nОтмена: удалить черновик и работать с файлом из GitHub.';
-      if (confirm(msg)) {
-        setData(d.data);
-        renumberOrder();
-        markDirty();
-        return true;
-      }
-    } catch (e) {
-      console.warn('Черновик повреждён', e);
-    }
-    clearDraft(draftKey);
-    return false;
-  }
+  // Временный режим: локальные черновики не восстанавливаются.
+  function offerDraft() { return false; }
 
   // предупреждение браузера при закрытии вкладки или окна, перезагрузке, переходе по другому адресу
   window.addEventListener('beforeunload', (e) => {
@@ -503,12 +459,11 @@
   // ---------- загрузка ----------
 
   async function loadData() {
-    const token = document.getElementById('gh-token').value.trim();
     const repo = document.getElementById('gh-repo').value.trim();
     const imgPath = document.getElementById('img-path').value.trim();
     const jsonPath = document.getElementById('json-path').value.trim();
 
-    if (!token || !repo || !jsonPath) return setStatus('Заполните Token, Repo и пути!', true);
+    if (!repo || !jsonPath) return setStatus('Заполните Repo и пути к файлам!', true);
 
     // повторная загрузка заменит всё, что сейчас в памяти, поэтому спрашиваем
     const wasDirty = isDirty || hasUnsavedEdit();
@@ -517,10 +472,10 @@
     const newKey = 'ocr-draft:' + repo + ':' + jsonPath;
     const isNewFile = newKey !== oldKey;
 
-    ['gh-token', 'gh-repo', 'img-path', 'json-path'].forEach(id => localStorage.setItem(id, document.getElementById(id).value.trim()));
+    ['gh-repo', 'img-path', 'json-path'].forEach(id => localStorage.setItem(id, document.getElementById(id).value.trim()));
     setStatus('Загрузка...');
 
-    const headers = { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3+json' };
+    const headers = { 'Accept': 'application/vnd.github.v3+json' };
 
     try {
       const jsonRes = await fetch(makeGithubUrl(repo, jsonPath), { headers });
@@ -529,7 +484,7 @@
       const newData = JSON.parse(b64DecodeUnicode(jsonMeta.content));
 
       const imgRes = await fetch(makeGithubUrl(repo, imgPath), {
-        headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3.raw' }
+        headers: { 'Accept': 'application/vnd.github.v3.raw' }
       });
       if (!imgRes.ok) throw new Error('Ошибка фото: код ' + imgRes.status);
       const imgBlob = await imgRes.blob();
@@ -547,9 +502,8 @@
       isDirty = false;
       draftKey = newKey;
 
-      const restored = offerDraft();
       renderWorkspace(false);
-      setStatus(restored ? 'Черновик восстановлен: есть несохранённые изменения' : 'Загружено!');
+      setStatus('Загружено. Правки останутся только до перезагрузки страницы.');
     } catch (e) {
       setStatus(e.message, true);
     }
@@ -1066,62 +1020,7 @@
     }
   });
 
-  // ---------- сохранение ----------
-
-  async function saveData() {
-    if (!rawJsonData) return;
-    if (editingIdx !== null) {
-      return setStatus('Сначала сохраните или отмените правку абзаца', true);
-    }
-    const token = document.getElementById('gh-token').value.trim();
-    const repo = document.getElementById('gh-repo').value.trim();
-    const jsonPath = document.getElementById('json-path').value.trim();
-
-    setStatus('Сохранение в GitHub...');
-
-    const rootObj = Array.isArray(rawJsonData) ? rawJsonData[0] : rawJsonData;
-    if (rootObj.markdown && Array.isArray(rootObj.prunedResult.parsing_res_list)) {
-      // служебные блоки (колонтитулы и т.п.) в markdown не попадают, как у самого PaddleOCR
-      const settings = rootObj.prunedResult.model_settings || {};
-      const ignoreLabels = Array.isArray(settings.markdown_ignore_labels)
-        ? settings.markdown_ignore_labels
-        : ['number', 'footnote', 'header', 'header_image', 'footer', 'footer_image', 'aside_text'];
-
-      rootObj.markdown.text = rootObj.prunedResult.parsing_res_list
-        .filter(b => !ignoreLabels.includes(b.block_label))
-        .map(b => b.block_content)
-        .filter(Boolean)
-        .join('\n\n');
-    }
-
-    try {
-      const updatedContent = b64EncodeUnicode(JSON.stringify(rawJsonData, null, 2));
-      const res = await fetch(makeGithubUrl(repo, jsonPath), {
-        method: 'PUT',
-        headers: {
-          'Authorization': 'token ' + token,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          message: 'OCR правка: ' + jsonPath,
-          content: updatedContent,
-          sha: currentSha
-        })
-      });
-
-      if (!res.ok) throw new Error('Ошибка сохранения: код ' + res.status);
-      const data = await res.json();
-      currentSha = data.content.sha;
-
-      // записано в GitHub: несохранённых изменений и черновика больше нет
-      isDirty = false;
-      clearDraft(draftKey);
-      setStatus('Успешно сохранено в GitHub!');
-    } catch (e) {
-      // при ошибке изменения остаются несохранёнными
-      setStatus(e.message, true);
-    }
-  }
+  // Сохранение отключено: редактор работает только с данными в памяти страницы.
 </script>
 </body>
 </html>
