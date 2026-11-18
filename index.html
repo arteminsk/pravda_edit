@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>OCR Редактор газеты</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; height: 100vh; background: #1e1e1e; color: #eee; }
+  header {
+    display: flex; gap: 10px; padding: 10px 15px; background: #2d2d2d;
+    border-bottom: 1px solid #444; align-items: center; flex-wrap: wrap;
+  }
+  input {
+    background: #1e1e1e; border: 1px solid #555; color: #fff;
+    padding: 6px 10px; border-radius: 4px; font-size: 13px;
+  }
+  button {
+    background: #0066cc; color: white; border: none; padding: 7px 14px;
+    border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 13px;
+  }
+  button:hover { background: #0052a3; }
+  button.save { background: #28a745; margin-left: auto; }
+  button.save:hover { background: #218838; }
+  #status { font-size: 13px; color: #aaa; margin-left: 10px; }
+  main { display: flex; flex: 1; overflow: hidden; }
+  #image-pane {
+    flex: 1; overflow: auto; position: relative; background: #121212;
+    border-right: 2px solid #444;
+    cursor: grab; user-select: none; -webkit-user-select: none;
+  }
+  #image-pane.dragging, #image-pane.dragging .bbox { cursor: grabbing; }
+  /* sizer задаёт область прокрутки: картинка плюс пустое поле со всех сторон,
+     поэтому её можно оторвать от любого края */
+  #sizer { position: relative; }
+  #canvas-wrapper { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  #page-img { display: block; max-width: none; -webkit-user-drag: none; }
+  .bbox {
+    position: absolute; border: 2px solid rgba(0, 150, 255, 0.5);
+    background: rgba(0, 150, 255, 0.08); cursor: pointer; transition: 0.15s;
+  }
+  /* помеченный блок: рамка жёлтая */
+  .bbox.marked { border-color: rgba(255, 200, 0, 0.9); background: rgba(255, 200, 0, 0.12); }
+  .bbox:hover { border-color: #ff9800; background: rgba(255, 152, 0, 0.2); }
+  .bbox.active {
+    border: 3px solid #ff3b30; background: rgba(255, 59, 48, 0.25); z-index: 10;
+  }
+  /* условная рамка блока без координат: небольшой пунктирный квадрат в углу */
+  .bbox.bbox-point { border-style: dashed; }
+  /* режим «только активная рамка»: остальные невидимы, но по ним по-прежнему можно кликать */
+  body.boxes-off .bbox:not(.active),
+  body.boxes-off .bbox:not(.active):hover {
+    border-color: transparent; background: transparent;
+  }
+  #editor-pane {
+    width: 480px; overflow-y: auto; padding: 20px 15px 50px; background: #252526;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .block-card {
+    position: relative; background: #2d2d30; border: 1px solid #3e3e42;
+    border-radius: 6px; padding: 10px; cursor: pointer;
+  }
+  .block-card:hover { border-color: #5a5a60; }
+  .block-card.active { border-color: #ff3b30; background: #372a2a; }
+  .block-card.marked { border-left: 4px solid #ffb300; }
+  .block-header {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; color: #999; margin-bottom: 6px;
+  }
+  .block-header .left { display: flex; align-items: center; gap: 4px; }
+  .flag { display: none; }
+  .block-card.marked .flag { display: inline; }
+  /* метка блока: выглядит как текст, по наведению показывает, что её можно менять */
+  select.lbl {
+    background: transparent; color: #ccc; border: 1px solid transparent; border-radius: 3px;
+    font-size: 11px; font-weight: 700; padding: 1px 2px; cursor: pointer; font-family: inherit;
+  }
+  select.lbl:hover:not(:disabled) { border-color: #5a5a60; background: #1e1e1e; }
+  select.lbl:disabled { cursor: default; appearance: none; -webkit-appearance: none; opacity: 0.8; }
+  select.lbl option { background: #2d2d30; color: #eee; }
+  .text-view {
+    font-size: 14px; line-height: 1.45; color: #f0f0f0;
+    white-space: pre-wrap; word-break: break-word; min-height: 20px;
+  }
+  .text-view.empty { color: #777; font-style: italic; }
+
+  /* уровни заголовков: и в просмотре, и в поле правки */
+  .lvl-1 { font-size: 24px; font-weight: 700; line-height: 1.25; }
+  .lvl-2 { font-size: 20px; font-weight: 700; line-height: 1.3; }
+  .lvl-3 { font-size: 18px; font-weight: 700; line-height: 1.3; }
+  .lvl-4 { font-size: 16px; font-weight: 700; line-height: 1.35; }
+  .lvl-5 { font-size: 15px; font-weight: 700; line-height: 1.4; }
+  .lvl-6 { font-size: 14px; font-weight: 700; line-height: 1.4; }
+
+  /* панель просмотра: появляется снизу выбранной карточки */
+  .toolbar {
+    display: none; position: absolute; bottom: -6px; right: 10px; z-index: 20;
+    background: #3a3a3d; border: 1px solid #5a5a60; border-radius: 6px;
+    padding: 3px; gap: 3px; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+  .block-card.active .toolbar { display: flex; }
+  .block-card.editing .toolbar { display: none; }
+  .toolbar button {
+    background: transparent; padding: 4px 9px; font-size: 12px; font-weight: 500;
+    border-radius: 4px; color: #ddd;
+  }
+  .toolbar button:hover { background: #505055; }
+  .toolbar button:disabled { opacity: 0.3; cursor: default; background: transparent; }
+  .toolbar button.add { font-size: 15px; font-weight: 700; padding: 2px 9px; }
+
+  /* редактор */
+  .editor { cursor: default; }
+  .etoolbar {
+    display: flex; align-items: center; gap: 4px; padding: 5px;
+    background: #3a3a3d; border: 1px solid #5a5a60; border-bottom: none;
+    border-radius: 6px 6px 0 0;
+  }
+  .etoolbar .spacer { flex: 1; }
+  .etoolbar button.tool {
+    background: transparent; color: #ddd; padding: 4px 10px; font-size: 14px;
+    font-weight: 600; min-width: 34px;
+  }
+  .etoolbar button.tool:hover { background: #505055; }
+  .etoolbar button.cancel {
+    background: transparent; color: #ddd; border: 1px solid #6a6a70; padding: 4px 12px;
+  }
+  .etoolbar button.cancel:hover { background: #505055; }
+  .etoolbar button.ok { background: #0066cc; padding: 4px 14px; }
+  .level-wrap { position: relative; }
+  .level-menu {
+    display: none; position: absolute; top: 100%; left: 0; z-index: 30;
+    background: #2d2d30; border: 1px solid #5a5a60; border-radius: 6px;
+    padding: 4px 0; min-width: 150px; box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+  }
+  .level-wrap:hover .level-menu { display: block; }
+  .level-item { padding: 4px 14px; cursor: pointer; color: #eee; font-weight: 600; white-space: nowrap; }
+  .level-item:hover { background: #3f3f44; }
+  .level-item.current { color: #4da3ff; }
+
+  textarea {
+    width: 100%; background: #1e1e1e; color: #f0f0f0; border: 1px solid #5a5a60;
+    border-radius: 0 0 6px 6px; padding: 8px; font-size: 14px; line-height: 1.4;
+    resize: vertical; min-height: 75px; outline: none; display: block;
+  }
+  textarea:focus { border-color: #007acc; }
+</style>
+</head>
+<body>
+
+<header>
+  <input type="password" id="gh-token" placeholder="GitHub Token (ghp_...)" style="width: 180px;">
+  <input type="text" id="gh-repo" placeholder="owner/repo (напр. ivan/gazeta)" style="width: 180px;">
+  <input type="text" id="img-path" placeholder="Путь к фото" value="nyt/1940s/1940/02/01/01.webp" style="width: 230px;">
+  <input type="text" id="json-path" placeholder="Путь к JSON" value="nyt/1940s/1940/02/01/01.json" style="width: 230px;">
+  <button onclick="loadData()">Загрузить</button>
+  <button onclick="zoom(0.8)" title="Уменьшить">➖</button>
+  <button onclick="zoom(1.25)" title="Увеличить">➕</button>
+  <button onclick="resetView()" title="Вернуть масштаб и положение как при загрузке">⟲</button>
+  <button id="btn-boxes" onclick="toggleBoxes()" title="Показывать все рамки или только активную">▭ Рамки: все</button>
+  <span id="status">Готов к работе</span>
+  <button class="save" onclick="saveData()">💾 Сохранить в GitHub</button>
+</header>
+
+<main>
+  <div id="image-pane">
+    <div id="sizer">
+      <div id="canvas-wrapper">
+        <img id="page-img" src="" alt="" draggable="false">
+        <div id="boxes-layer"></div>
+      </div>
+    </div>
+  </div>
+  <div id="editor-pane"></div>
+</main>
+
+<script>
+  const DEFAULT_SCALE = 0.35;
+  const MIN_SCALE = 0.05;
+  const MAX_SCALE = 3;
+  const PAD = 500;            // пустое поле вокруг картинки (px на экране)
+  const PATHS_VERSION = '2';  // при смене версии прежние пути из памяти браузера сбрасываются
+
+  // типы блоков, которые определяются уровнем заголовка
+  const FAMILY_LABELS = ['text', 'paragraph_title', 'doc_title'];
+
+  // метки PaddleOCR-VL; к ним добавляются все метки, найденные в загруженном файле
+  const STD_LABELS = [
+    'text', 'paragraph_title', 'doc_title', 'header', 'header_image', 'footer', 'footer_image',
+    'footnote', 'number', 'aside_text', 'image', 'chart', 'table', 'figure_title',
+    'formula_number', 'display_formula', 'inline_formula', 'abstract', 'content',
+    'reference', 'reference_content', 'algorithm', 'seal', 'vertical_text', 'vision_footnote'
+  ];
+
+  let rawJsonData = null;
+  let blocks = [];
+  let currentSha = '';
+  let currentScale = DEFAULT_SCALE;
+  let selectedIdx = null;
+  let editingIdx = null;
+  let editLevel = 0;
+  let editInitLevel = 0; // уровень блока до правки
+  let pendingNew = null; // новый, ещё не сохранённый блок (ссылка на объект)
+  let isDirty = false;   // есть изменения, не записанные в GitHub
+  let draftKey = null;   // ключ черновика в localStorage для текущего файла
+  let draftTimer = null;
+  let boxesOnlyActive = false; // режим рамок: false = все, true = только активная
+  let pendingHome = false;     // после загрузки новой картинки поставить её в начальное положение
+
+  window.onload = () => {
+    // пути к пробному файлу поменялись: прежние значения из памяти браузера один раз сбрасываем
+    if (localStorage.getItem('ocr-paths-v') !== PATHS_VERSION) {
+      localStorage.removeItem('img-path');
+      localStorage.removeItem('json-path');
+      localStorage.setItem('ocr-paths-v', PATHS_VERSION);
+    }
+    ['gh-token', 'gh-repo', 'img-path', 'json-path'].forEach(id => {
+      if (localStorage.getItem(id)) document.getElementById(id).value = localStorage.getItem(id);
+    });
+    initImageControls();
+    setBoxesMode(localStorage.getItem('ocr-boxes-only-active') === '1');
+  };
+
+  function setStatus(text, isError = false) {
+    const el = document.getElementById('status');
+    el.textContent = text;
+    el.style.color = isError ? '#ff6b6b' : '#6bff95';
+  }
+
+  // обычный текст -> text, H1 -> doc_title, H2-H6 -> paragraph_title
+  function labelForLevel(level) {
+    if (level === 0) return 'text';
+    if (level === 1) return 'doc_title';
+    return 'paragraph_title';
+  }
+
+  // ---------- несохранённые изменения и черновик ----------
+
+  // открыт редактор абзаца, и в нём есть то, чего ещё нет в блоке
+  function hasUnsavedEdit() {
+    if (editingIdx === null) return false;
+    const ta = document.querySelector('#card-' + editingIdx + ' textarea');
+    if (!ta) return false;
+    const p = parseContent(blocks[editingIdx].block_content);
+    return ta.value !== p.text || editLevel !== p.level;
+  }
+
+  function markDirty() {
+    isDirty = true;
+    setStatus('Есть несохранённые изменения');
+    scheduleDraft();
+  }
+
+  function scheduleDraft() {
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(writeDraft, 500);
+  }
+
+  // черновик: копия данных в памяти браузера (без токена), на случай сбоя или случайного закрытия
+  function writeDraft() {
+    if (!draftKey || !rawJsonData) return;
+    try {
+      const copy = JSON.parse(JSON.stringify(rawJsonData));
+      if (pendingNew) {
+        // новое, ещё не сохранённое поле в черновик не попадает
+        const i = blocks.indexOf(pendingNew);
+        if (i >= 0) {
+          const r = Array.isArray(copy) ? copy[0] : copy;
+          r.prunedResult.parsing_res_list.splice(i, 1);
+        }
+      }
+      localStorage.setItem(draftKey, JSON.stringify({ sha: currentSha, savedAt: Date.now(), data: copy }));
+    } catch (e) {
+      console.warn('Не удалось записать черновик', e);
+    }
+  }
+
+  function clearDraft(key) {
+    clearTimeout(draftTimer);
+    if (!key) return;
+    try { localStorage.removeItem(key); } catch (e) {}
+  }
+
+  function setData(data) {
+    rawJsonData = data;
+    const rootObj = Array.isArray(rawJsonData) ? rawJsonData[0] : rawJsonData;
+    blocks = rootObj.prunedResult.parsing_res_list;
+  }
+
+  // если для этого файла есть черновик, предлагаем его восстановить
+  function offerDraft() {
+    let raw;
+    try { raw = localStorage.getItem(draftKey); } catch (e) { return false; }
+    if (!raw) return false;
+    try {
+      const d = JSON.parse(raw);
+      if (!d || !d.data) throw new Error('пустой черновик');
+      let msg = 'Найден несохранённый черновик от ' + new Date(d.savedAt).toLocaleString('ru-RU') + '.\n\n';
+      if (d.sha !== currentSha) {
+        msg += 'Внимание: файл на GitHub изменился после создания черновика, при сохранении эти изменения будут перезаписаны.\n\n';
+      }
+      msg += 'ОК: восстановить черновик.\nОтмена: удалить черновик и работать с файлом из GitHub.';
+      if (confirm(msg)) {
+        setData(d.data);
+        renumberOrder();
+        markDirty();
+        return true;
+      }
+    } catch (e) {
+      console.warn('Черновик повреждён', e);
+    }
+    clearDraft(draftKey);
+    return false;
+  }
+
+  // предупреждение браузера при закрытии вкладки или окна, перезагрузке, переходе по другому адресу
+  window.addEventListener('beforeunload', (e) => {
+    if (isDirty || hasUnsavedEdit()) {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    }
+  });
+
+  // когда вкладку сворачивают или закрывают, черновик пишется сразу, не дожидаясь паузы
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && isDirty) {
+      clearTimeout(draftTimer);
+      writeDraft();
+    }
+  });
+
+  // ---------- масштаб, перетаскивание и режим рамок ----------
+
+  // размер области прокрутки: картинка в текущем масштабе плюс пустое поле PAD со всех сторон
+  function updateSizer() {
+    const img = document.getElementById('page-img');
+    const sizer = document.getElementById('sizer');
+    const wrap = document.getElementById('canvas-wrapper');
+    sizer.style.width = ((img.naturalWidth || 0) * currentScale + 2 * PAD) + 'px';
+    sizer.style.height = ((img.naturalHeight || 0) * currentScale + 2 * PAD) + 'px';
+    wrap.style.left = PAD + 'px';
+    wrap.style.top = PAD + 'px';
+  }
+
+  // начальное положение: левый верхний угол картинки у левого верхнего угла окна
+  function goHome() {
+    const pane = document.getElementById('image-pane');
+    pane.scrollLeft = PAD - 20;
+    pane.scrollTop = PAD - 20;
+  }
+
+  // новый масштаб так, чтобы точка под курсором (px, py относительно панели) осталась на месте
+  function setScaleAt(newScale, px, py) {
+    const pane = document.getElementById('image-pane');
+    const wrap = document.getElementById('canvas-wrapper');
+    newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, newScale));
+    const ix = (pane.scrollLeft + px - PAD) / currentScale;
+    const iy = (pane.scrollTop + py - PAD) / currentScale;
+    currentScale = newScale;
+    wrap.style.transform = 'scale(' + currentScale + ')';
+    updateSizer();
+    pane.scrollLeft = ix * currentScale + PAD - px;
+    pane.scrollTop = iy * currentScale + PAD - py;
+  }
+
+  function zoom(factor) {
+    const pane = document.getElementById('image-pane');
+    setScaleAt(currentScale * factor, pane.clientWidth / 2, pane.clientHeight / 2);
+  }
+
+  function resetView() {
+    currentScale = DEFAULT_SCALE;
+    document.getElementById('canvas-wrapper').style.transform = 'scale(' + currentScale + ')';
+    updateSizer();
+    goHome();
+  }
+
+  function setBoxesMode(onlyActive) {
+    boxesOnlyActive = onlyActive;
+    document.body.classList.toggle('boxes-off', onlyActive);
+    document.getElementById('btn-boxes').textContent = onlyActive ? '▭ Рамки: только активная' : '▭ Рамки: все';
+    try { localStorage.setItem('ocr-boxes-only-active', onlyActive ? '1' : '0'); } catch (e) {}
+  }
+
+  function toggleBoxes() {
+    setBoxesMode(!boxesOnlyActive);
+  }
+
+  function clearSelection() {
+    selectedIdx = null;
+    document.querySelectorAll('.bbox.active, .block-card.active').forEach(el => el.classList.remove('active'));
+  }
+
+  let drag = null;
+  let suppressClick = false;
+
+  function initImageControls() {
+    const pane = document.getElementById('image-pane');
+    const img = document.getElementById('page-img');
+
+    img.onload = () => {
+      updateSizer();
+      if (pendingHome) {
+        pendingHome = false;
+        goHome();
+      }
+    };
+    updateSizer();
+
+    pane.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const r = pane.getBoundingClientRect();
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      setScaleAt(currentScale * factor, e.clientX - r.left, e.clientY - r.top);
+    }, { passive: false });
+
+    pane.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      const r = pane.getBoundingClientRect();
+      // нажатие на полосу прокрутки не трогаем
+      if (e.clientX - r.left >= pane.clientWidth || e.clientY - r.top >= pane.clientHeight) return;
+      drag = { x: e.clientX, y: e.clientY, sl: pane.scrollLeft, st: pane.scrollTop, moved: false };
+      e.preventDefault();
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!drag) return;
+      const dx = e.clientX - drag.x;
+      const dy = e.clientY - drag.y;
+      if (!drag.moved && Math.hypot(dx, dy) > 4) {
+        drag.moved = true;
+        pane.classList.add('dragging');
+      }
+      if (drag.moved) {
+        pane.scrollLeft = drag.sl - dx;
+        pane.scrollTop = drag.st - dy;
+      }
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (!drag) return;
+      if (drag.moved) {
+        // после перетаскивания клик по рамке не считается выбором блока
+        suppressClick = true;
+        setTimeout(() => { suppressClick = false; }, 0);
+        pane.classList.remove('dragging');
+      }
+      drag = null;
+    });
+
+    // в режиме «только активная рамка» клик по картинке вне рамки снимает выбор вместе с последней рамкой
+    pane.addEventListener('click', (e) => {
+      if (suppressClick || !boxesOnlyActive) return;
+      if (e.target.closest('.bbox')) return;
+      if (editingIdx !== null) {
+        setStatus('Сначала сохраните или отмените правку', true);
+        return;
+      }
+      clearSelection();
+    });
+  }
+
+  // ---------- GitHub ----------
+
+  function makeGithubUrl(repo, filePath) {
+    return 'https://api.github.com/repos/' + repo + '/contents/' + filePath;
+  }
+
+  function b64DecodeUnicode(str) {
+    return decodeURIComponent(atob(str).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+  }
+
+  function b64EncodeUnicode(str) {
+    return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => String.fromCharCode('0x' + p1)));
+  }
+
+  // ---------- разбор разметки ----------
+
+  // "## Текст" -> { level: 2, text: "Текст" }
+  function parseContent(content) {
+    const m = /^(#{1,6})\s+([\s\S]*)$/.exec(content || '');
+    if (m) return { level: m[1].length, text: m[2] };
+    return { level: 0, text: content || '' };
+  }
+
+  function buildContent(level, text) {
+    if (!text.trim()) return '';
+    return level > 0 ? '#'.repeat(level) + ' ' + text : text;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // жирный, курсив, зачёркнутый; текст сначала экранируется, так что вставка безопасна
+  function inlineHtml(text) {
+    let h = escapeHtml(text);
+    h = h.replace(/\*\*([^*\n]+?)\*\*/g, '<b>$1</b>');
+    h = h.replace(/~~([^~\n]+?)~~/g, '<s>$1</s>');
+    h = h.replace(/\*([^*\n]+?)\*/g, '<i>$1</i>');
+    return h;
+  }
+
+  // ---------- загрузка ----------
+
+  async function loadData() {
+    const token = document.getElementById('gh-token').value.trim();
+    const repo = document.getElementById('gh-repo').value.trim();
+    const imgPath = document.getElementById('img-path').value.trim();
+    const jsonPath = document.getElementById('json-path').value.trim();
+
+    if (!token || !repo || !jsonPath) return setStatus('Заполните Token, Repo и пути!', true);
+
+    // повторная загрузка заменит всё, что сейчас в памяти, поэтому спрашиваем
+    const wasDirty = isDirty || hasUnsavedEdit();
+    if (wasDirty && !confirm('Есть несохранённые изменения. Загрузить файл заново и потерять их?')) return;
+    const oldKey = draftKey;
+    const newKey = 'ocr-draft:' + repo + ':' + jsonPath;
+    const isNewFile = newKey !== oldKey;
+
+    ['gh-token', 'gh-repo', 'img-path', 'json-path'].forEach(id => localStorage.setItem(id, document.getElementById(id).value.trim()));
+    setStatus('Загрузка...');
+
+    const headers = { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3+json' };
+
+    try {
+      const jsonRes = await fetch(makeGithubUrl(repo, jsonPath), { headers });
+      if (!jsonRes.ok) throw new Error('Ошибка JSON: код ' + jsonRes.status);
+      const jsonMeta = await jsonRes.json();
+      const newData = JSON.parse(b64DecodeUnicode(jsonMeta.content));
+
+      const imgRes = await fetch(makeGithubUrl(repo, imgPath), {
+        headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3.raw' }
+      });
+      if (!imgRes.ok) throw new Error('Ошибка фото: код ' + imgRes.status);
+      const imgBlob = await imgRes.blob();
+      // новую картинку ставим в начальное положение, повторную загрузку того же файла не двигаем
+      pendingHome = isNewFile;
+      document.getElementById('page-img').src = URL.createObjectURL(imgBlob);
+
+      // всё загрузилось: можно заменить данные в памяти
+      currentSha = jsonMeta.sha;
+      setData(newData);
+      if (wasDirty && oldKey) clearDraft(oldKey);
+      selectedIdx = null;
+      editingIdx = null;
+      pendingNew = null;
+      isDirty = false;
+      draftKey = newKey;
+
+      const restored = offerDraft();
+      renderWorkspace(false);
+      setStatus(restored ? 'Черновик восстановлен: есть несохранённые изменения' : 'Загружено!');
+    } catch (e) {
+      setStatus(e.message, true);
+    }
+  }
+
+  // ---------- отрисовка ----------
+
+  // список меток для выбора: стандартные плюс все, что встретились в файле
+  function labelOptions() {
+    const extra = [];
+    blocks.forEach(b => {
+      if (b.block_label && !STD_LABELS.includes(b.block_label) && !extra.includes(b.block_label)) extra.push(b.block_label);
+    });
+    return STD_LABELS.concat(extra);
+  }
+
+  // keepScroll: колонка с абзацами остаётся там, где была прокручена (при загрузке нового файла = false)
+  function renderWorkspace(keepScroll = true) {
+    const boxesLayer = document.getElementById('boxes-layer');
+    const editorPane = document.getElementById('editor-pane');
+    const savedScroll = keepScroll ? editorPane.scrollTop : 0;
+    boxesLayer.innerHTML = '';
+    editorPane.innerHTML = '';
+
+    document.getElementById('canvas-wrapper').style.transform = 'scale(' + currentScale + ')';
+
+    const labelList = labelOptions();
+
+    blocks.forEach((block, idx) => {
+      const [x1, y1, x2, y2] = block.block_bbox;
+
+      const box = document.createElement('div');
+      box.className = 'bbox';
+      box.id = 'box-' + idx;
+      if (block.marked) box.classList.add('marked');
+      box.style.left = x1 + 'px';
+      box.style.top = y1 + 'px';
+      if (x2 - x1 === 0 && y2 - y1 === 0) {
+        // блок без площади (добавленный вручную): рисуем заметный квадрат в углу
+        box.classList.add('bbox-point');
+        box.style.width = '60px';
+        box.style.height = '60px';
+      } else {
+        box.style.width = (x2 - x1) + 'px';
+        box.style.height = (y2 - y1) + 'px';
+      }
+      box.onclick = () => {
+        if (suppressClick) return;
+        selectBlock(idx, 'box');
+      };
+      boxesLayer.appendChild(box);
+
+      editorPane.appendChild(buildCard(block, idx, labelList));
+    });
+
+    editorPane.scrollTop = savedScroll;
+  }
+
+  function buildCard(block, idx, labelList) {
+    const card = document.createElement('div');
+    card.className = 'block-card';
+    card.id = 'card-' + idx;
+    if (block.marked) card.classList.add('marked');
+
+    const header = document.createElement('div');
+    header.className = 'block-header';
+    const left = document.createElement('span');
+    left.className = 'left';
+    const flag = document.createElement('span');
+    flag.className = 'flag';
+    flag.textContent = '🚩';
+    const num = document.createElement('span');
+    num.textContent = '#' + block.block_id + ' • ';
+    const label = document.createElement('select');
+    label.className = 'lbl';
+    label.title = 'Метка блока (можно изменить)';
+    labelList.forEach(l => {
+      const o = document.createElement('option');
+      o.value = l;
+      o.textContent = l;
+      label.appendChild(o);
+    });
+    label.value = block.block_label;
+    label.onchange = () => changeLabel(block, label, label.value);
+    left.appendChild(flag);
+    left.appendChild(num);
+    left.appendChild(label);
+    const right = document.createElement('span');
+    right.textContent = 'Порядок: ' + (block.block_order ?? '-');
+    header.appendChild(left);
+    header.appendChild(right);
+    card.appendChild(header);
+
+    card.appendChild(makeView(idx));
+
+    const bar = document.createElement('div');
+    bar.className = 'toolbar';
+    bar.onmousedown = (e) => e.preventDefault();
+
+    const btnAdd = makeBtn('＋', 'Добавить новое поле сверху', () => addBlockAbove(idx));
+    btnAdd.classList.add('add');
+    const btnEdit = makeBtn('✏️ Править', 'Править текст', () => startEdit(idx));
+    const btnCopy = makeBtn('📋 Копировать', 'Копировать текст', () => {
+      navigator.clipboard.writeText(block.block_content || '')
+        .then(() => setStatus('Скопировано'))
+        .catch(() => setStatus('Не удалось скопировать', true));
+    });
+    const btnMark = makeBtn(block.marked ? '🚩 Снять' : '🚩 Пометить', 'Пометить блок; пометка снимается только вручную', () => {
+      if (block.marked) delete block.marked; else block.marked = true;
+      btnMark.textContent = block.marked ? '🚩 Снять' : '🚩 Пометить';
+      card.classList.toggle('marked', !!block.marked);
+      const bx = document.getElementById('box-' + blocks.indexOf(block));
+      if (bx) bx.classList.toggle('marked', !!block.marked);
+      markDirty();
+    });
+    const btnUp = makeBtn('▲', 'Выше (Ctrl+↑)', () => moveBlock(idx, -1));
+    const btnDown = makeBtn('▼', 'Ниже (Ctrl+↓)', () => moveBlock(idx, 1));
+    btnUp.disabled = idx === 0;
+    btnDown.disabled = idx === blocks.length - 1;
+
+    [btnAdd, btnEdit, btnCopy, btnMark, btnUp, btnDown].forEach(b => bar.appendChild(b));
+    card.appendChild(bar);
+
+    card.onclick = () => selectBlock(idx, 'card');
+    return card;
+  }
+
+  function makeBtn(text, title, handler) {
+    const b = document.createElement('button');
+    b.textContent = text;
+    b.title = title;
+    b.onclick = (e) => { e.stopPropagation(); handler(); };
+    return b;
+  }
+
+  function makeView(idx) {
+    const view = document.createElement('div');
+    const parsed = parseContent(blocks[idx].block_content);
+    view.className = 'text-view';
+    if (parsed.level > 0) view.classList.add('lvl-' + parsed.level);
+    if (parsed.text.trim()) {
+      view.innerHTML = inlineHtml(parsed.text);
+    } else {
+      view.textContent = '(нет текста)';
+      view.classList.add('empty');
+    }
+    view.ondblclick = () => startEdit(idx);
+    return view;
+  }
+
+  // ---------- смена метки блока ----------
+
+  // Связь типа и уровня заголовка строгая: text без #, doc_title с одним #, paragraph_title с ## и глубже,
+  // остальные метки (header и др.) без #. Поэтому при смене метки знаки # в тексте подгоняются.
+  function changeLabel(block, sel, newLabel) {
+    const idx = blocks.indexOf(block);
+    if (idx < 0 || newLabel === block.block_label) return;
+    if (editingIdx !== null) {
+      sel.value = block.block_label;
+      setStatus('Сначала сохраните или отмените правку', true);
+      return;
+    }
+    const parsed = parseContent(block.block_content);
+    let lvl = 0;
+    if (newLabel === 'doc_title') lvl = 1;
+    else if (newLabel === 'paragraph_title') lvl = parsed.level >= 2 ? parsed.level : 2;
+
+    block.block_label = newLabel;
+    block.block_content = buildContent(lvl, parsed.text);
+
+    const card = document.getElementById('card-' + idx);
+    if (card) {
+      const view = card.querySelector('.text-view');
+      if (view) view.replaceWith(makeView(idx));
+    }
+    markDirty();
+  }
+
+  // ---------- прокрутка колонки с абзацами ----------
+
+  // Карточка двигает колонку, только если нужно показать её из-за края; если она видна, ничего не двигается.
+  // mode 'top': следим только за верхом карточки (для правки: поле может быть выше окна).
+  // mode 'full': карточка должна показаться целиком (и с панелью кнопок под ней), с минимальной прокруткой.
+  function ensureVisible(card, mode) {
+    const pane = document.getElementById('editor-pane');
+    const pr = pane.getBoundingClientRect();
+    const cr = card.getBoundingClientRect();
+    const margin = 8;
+    const toolbarExtra = 14; // панель кнопок выступает под карточкой
+
+    const topHidden = cr.top < pr.top + margin || cr.top > pr.bottom - 40;
+    if (mode === 'top' || cr.height + toolbarExtra > pr.height) {
+      if (topHidden) pane.scrollTop += cr.top - pr.top - margin;
+      return;
+    }
+    if (cr.top < pr.top + margin) {
+      pane.scrollTop += cr.top - pr.top - margin;
+    } else if (cr.bottom + toolbarExtra > pr.bottom - margin) {
+      pane.scrollTop += cr.bottom + toolbarExtra - pr.bottom + margin;
+    }
+  }
+
+  // ---------- выход из правки при переходе на другой блок ----------
+
+  // Возвращает индекс, с которым можно продолжать (он может сместиться, если пустой новый блок убран),
+  // или null, если переход запрещён: сначала нужно сохранить или отменить правку.
+  function leaveEditFor(idx) {
+    if (editingIdx === null || idx === editingIdx) return idx;
+    if (pendingNew && blocks[editingIdx] === pendingNew) {
+      const ta = document.querySelector('#card-' + editingIdx + ' textarea');
+      if (!ta || !ta.value.trim()) {
+        const removed = editingIdx;
+        removePending(removed);
+        return idx > removed ? idx - 1 : idx;
+      }
+    }
+    setStatus('Сначала сохраните или отмените правку', true);
+    return null;
+  }
+
+  function removePending(idx) {
+    blocks.splice(idx, 1);
+    pendingNew = null;
+    editingIdx = null;
+    selectedIdx = null;
+    renumberOrder();
+    renderWorkspace();
+  }
+
+  // ---------- выбор блока ----------
+
+  // Картинку при выборе не двигаем: меняется только подсветка рамки.
+  // Колонка с абзацами прокручивается лишь если выбор сделан по рамке или перемещением
+  // и карточка при этом не видна целиком; прокрутка минимальная, без центрирования.
+  function selectBlock(idx, source) {
+    const n = leaveEditFor(idx);
+    if (n === null) return;
+    idx = n;
+
+    selectedIdx = idx;
+    document.querySelectorAll('.bbox, .block-card').forEach(el => el.classList.remove('active'));
+    const box = document.getElementById('box-' + idx);
+    const card = document.getElementById('card-' + idx);
+    if (box) box.classList.add('active');
+    if (card) card.classList.add('active');
+
+    if (editingIdx === null && card && (source === 'box' || source === 'move')) {
+      ensureVisible(card, 'full');
+    }
+  }
+
+  // ---------- новое поле ----------
+
+  function addBlockAbove(idx) {
+    if (editingIdx !== null) {
+      setStatus('Сначала сохраните или отмените правку', true);
+      return;
+    }
+    const cur = blocks[idx];
+    const bb = cur.block_bbox || [0, 0, 0, 0];
+    const x = bb[0], y = bb[1];
+    const maxId = blocks.reduce((m, b) => Math.max(m, Number(b.block_id) || 0), 0);
+    const hasOrder = cur.block_order !== null && cur.block_order !== undefined;
+
+    const nb = {
+      block_label: 'text',
+      block_content: '',
+      block_bbox: [x, y, x, y],
+      block_id: maxId + 1,
+      group_id: cur.group_id ?? 0,
+      block_polygon_points: [[x, y], [x, y], [x, y], [x, y]],
+      block_order: hasOrder ? 0 : null
+    };
+
+    blocks.splice(idx, 0, nb);
+    pendingNew = nb;
+    renumberOrder();
+    renderWorkspace();
+    selectBlock(idx, 'move');
+    startEdit(idx);
+  }
+
+  // ---------- правка ----------
+
+  function autosize(ta) {
+    ta.style.height = 'auto';
+    ta.style.height = Math.max(75, ta.scrollHeight) + 'px';
+  }
+
+  function wrapSelection(ta, mark) {
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    ta.value = ta.value.slice(0, s) + mark + ta.value.slice(s, e) + mark + ta.value.slice(e);
+    ta.focus();
+    ta.setSelectionRange(s + mark.length, e + mark.length);
+    autosize(ta);
+  }
+
+  function startEdit(idx, draft) {
+    const n = leaveEditFor(idx);
+    if (n === null) return;
+    idx = n;
+    if (editingIdx === idx) return;
+    selectBlock(idx, null);
+
+    const card = document.getElementById('card-' + idx);
+    const view = card.querySelector('.text-view');
+    if (!view) return;
+
+    const parsed = parseContent(blocks[idx].block_content);
+    const text = draft ? draft.text : parsed.text;
+    editLevel = draft ? draft.level : parsed.level;
+    editInitLevel = parsed.level;
+    editingIdx = idx;
+
+    const editor = document.createElement('div');
+    editor.className = 'editor';
+    editor.onclick = (e) => e.stopPropagation();
+    editor.ondblclick = (e) => e.stopPropagation();
+
+    const bar = document.createElement('div');
+    bar.className = 'etoolbar';
+    // чтобы нажатия на панель не отбирали фокус и выделение у поля ввода
+    bar.onmousedown = (e) => e.preventDefault();
+
+    const ta = document.createElement('textarea');
+    ta.value = text;
+
+    // меню уровня заголовка: выпадает при наведении
+    const wrap = document.createElement('div');
+    wrap.className = 'level-wrap';
+    const levelBtn = document.createElement('button');
+    levelBtn.className = 'tool';
+    levelBtn.title = 'Уровень заголовка (определяет тип блока)';
+    wrap.appendChild(levelBtn);
+    const menu = document.createElement('div');
+    menu.className = 'level-menu';
+    const sizes = [14, 22, 19, 17, 15, 14, 13];
+    const names = ['Обычный текст', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'];
+    [0, 1, 2, 3, 4, 5, 6].forEach(lv => {
+      const it = document.createElement('div');
+      it.className = 'level-item';
+      it.textContent = names[lv];
+      it.style.fontSize = sizes[lv] + 'px';
+      it.dataset.level = lv;
+      it.onclick = () => {
+        setLevel(ta, levelBtn, menu, lv);
+        menu.style.display = 'none';
+      };
+      menu.appendChild(it);
+    });
+    wrap.onmouseleave = () => { menu.style.display = ''; };
+    wrap.appendChild(menu);
+    bar.appendChild(wrap);
+
+    const bBold = document.createElement('button');
+    bBold.className = 'tool'; bBold.textContent = 'B'; bBold.title = 'Жирный';
+    bBold.onclick = () => wrapSelection(ta, '**');
+    const bItalic = document.createElement('button');
+    bItalic.className = 'tool'; bItalic.textContent = 'I'; bItalic.title = 'Курсив';
+    bItalic.style.fontStyle = 'italic';
+    bItalic.onclick = () => wrapSelection(ta, '*');
+    const bStrike = document.createElement('button');
+    bStrike.className = 'tool'; bStrike.textContent = 'S'; bStrike.title = 'Зачёркнутый';
+    bStrike.style.textDecoration = 'line-through';
+    bStrike.onclick = () => wrapSelection(ta, '~~');
+    [bBold, bItalic, bStrike].forEach(b => bar.appendChild(b));
+
+    const spacer = document.createElement('span');
+    spacer.className = 'spacer';
+    bar.appendChild(spacer);
+
+    const bCancel = document.createElement('button');
+    bCancel.className = 'cancel'; bCancel.textContent = 'Отмена';
+    bCancel.onclick = () => finishEdit(false);
+    const bOk = document.createElement('button');
+    bOk.className = 'ok'; bOk.textContent = 'Сохранить';
+    bOk.onclick = () => finishEdit(true);
+    bar.appendChild(bCancel);
+    bar.appendChild(bOk);
+
+    ta.oninput = () => autosize(ta);
+
+    editor.appendChild(bar);
+    editor.appendChild(ta);
+    view.replaceWith(editor);
+    card.classList.add('editing');
+
+    // пока идёт правка, метку блока не меняем: тип блока определяется уровнем
+    const lbl = card.querySelector('.lbl');
+    if (lbl) lbl.disabled = true;
+
+    setLevel(ta, levelBtn, menu, editLevel);
+    // фокус без прокрутки: колонка двигается только по правилу ensureVisible
+    ta.focus({ preventScroll: true });
+    if (draft && draft.selStart != null) {
+      ta.setSelectionRange(draft.selStart, draft.selEnd);
+    } else {
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+    // при начале правки колонка двигается, только если верх карточки скрыт за краем
+    if (!draft) ensureVisible(card, 'top');
+  }
+
+  function setLevel(ta, levelBtn, menu, level) {
+    editLevel = level;
+    ta.className = level > 0 ? 'lvl-' + level : '';
+    levelBtn.textContent = level > 0 ? 'H' + level : 'Tт';
+    menu.querySelectorAll('.level-item').forEach(it => {
+      it.classList.toggle('current', Number(it.dataset.level) === level);
+    });
+    autosize(ta);
+  }
+
+  function finishEdit(save) {
+    if (editingIdx === null) return;
+    const idx = editingIdx;
+    const card = document.getElementById('card-' + idx);
+    const ta = card ? card.querySelector('textarea') : null;
+    const isNew = pendingNew !== null && blocks[idx] === pendingNew;
+
+    if (isNew && !save) {
+      // отмена нового поля: оно убирается совсем, выделяется блок, над которым оно было
+      removePending(idx);
+      selectBlock(idx, null);
+      return;
+    }
+
+    if (save && ta) {
+      const blk = blocks[idx];
+      const newContent = buildContent(editLevel, ta.value);
+
+      // тип блока определяется уровнем: у блоков text / paragraph_title / doc_title всегда,
+      // у остальных (например header) только если уровень был изменён вручную
+      let newLabel = blk.block_label;
+      if (newContent && (FAMILY_LABELS.includes(blk.block_label) || editLevel !== editInitLevel)) {
+        newLabel = labelForLevel(editLevel);
+      }
+
+      const changed = isNew
+        || newContent !== (blk.block_content || '')
+        || newLabel !== blk.block_label;
+
+      blk.block_content = newContent;
+      blk.block_label = newLabel;
+      if (isNew) pendingNew = null;
+      if (changed) markDirty();
+
+      const lbl = card.querySelector('.lbl');
+      if (lbl) lbl.value = newLabel;
+    }
+
+    editingIdx = null;
+    if (!card) return;
+    const editor = card.querySelector('.editor');
+    if (editor) editor.replaceWith(makeView(idx));
+    card.classList.remove('editing');
+    const lbl2 = card.querySelector('.lbl');
+    if (lbl2) lbl2.disabled = false;
+  }
+
+  // ---------- перемещение ----------
+
+  // Ничего не прокручивается: колонка и картинка остаются там, где были.
+  // Исключение одно: если после сдвига карточка ушла за край окна, её возвращают в поле зрения
+  // минимальной прокруткой (иначе при серии Ctrl+↑/↓ блок можно потерять из виду).
+  function moveBlock(idx, dir) {
+    const j = idx + dir;
+    if (j < 0 || j >= blocks.length) return;
+
+    // если блок сейчас правится, переносим черновик вместе с ним
+    let draft = null;
+    if (editingIdx === idx) {
+      const ta = document.querySelector('#card-' + idx + ' textarea');
+      if (ta) {
+        draft = { text: ta.value, level: editLevel, selStart: ta.selectionStart, selEnd: ta.selectionEnd };
+      }
+    }
+    editingIdx = null;
+
+    const tmp = blocks[idx];
+    blocks[idx] = blocks[j];
+    blocks[j] = tmp;
+    renumberOrder();
+
+    renderWorkspace(); // прокрутка колонки сохраняется
+    selectBlock(j, 'move');
+    if (draft) startEdit(j, draft);
+    markDirty();
+  }
+
+  // порядок чтения: блоки, у которых он был задан, нумеруются заново по положению в списке
+  function renumberOrder() {
+    let n = 1;
+    blocks.forEach(b => {
+      if (b.block_order !== null && b.block_order !== undefined) b.block_order = n++;
+    });
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && editingIdx !== null) {
+      finishEdit(false);
+      return;
+    }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && editingIdx !== null) {
+      e.preventDefault();
+      finishEdit(true);
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+      if (selectedIdx === null) return;
+      e.preventDefault();
+      moveBlock(selectedIdx, e.key === 'ArrowUp' ? -1 : 1);
+    }
+  });
+
+  // ---------- сохранение ----------
+
+  async function saveData() {
+    if (!rawJsonData) return;
+    if (editingIdx !== null) {
+      return setStatus('Сначала сохраните или отмените правку абзаца', true);
+    }
+    const token = document.getElementById('gh-token').value.trim();
+    const repo = document.getElementById('gh-repo').value.trim();
+    const jsonPath = document.getElementById('json-path').value.trim();
+
+    setStatus('Сохранение в GitHub...');
+
+    const rootObj = Array.isArray(rawJsonData) ? rawJsonData[0] : rawJsonData;
+    if (rootObj.markdown && Array.isArray(rootObj.prunedResult.parsing_res_list)) {
+      // служебные блоки (колонтитулы и т.п.) в markdown не попадают, как у самого PaddleOCR
+      const settings = rootObj.prunedResult.model_settings || {};
+      const ignoreLabels = Array.isArray(settings.markdown_ignore_labels)
+        ? settings.markdown_ignore_labels
+        : ['number', 'footnote', 'header', 'header_image', 'footer', 'footer_image', 'aside_text'];
+
+      rootObj.markdown.text = rootObj.prunedResult.parsing_res_list
+        .filter(b => !ignoreLabels.includes(b.block_label))
+        .map(b => b.block_content)
+        .filter(Boolean)
+        .join('\n\n');
+    }
+
+    try {
+      const updatedContent = b64EncodeUnicode(JSON.stringify(rawJsonData, null, 2));
+      const res = await fetch(makeGithubUrl(repo, jsonPath), {
+        method: 'PUT',
+        headers: {
+          'Authorization': 'token ' + token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          message: 'OCR правка: ' + jsonPath,
+          content: updatedContent,
+          sha: currentSha
+        })
+      });
+
+      if (!res.ok) throw new Error('Ошибка сохранения: код ' + res.status);
+      const data = await res.json();
+      currentSha = data.content.sha;
+
+      // записано в GitHub: несохранённых изменений и черновика больше нет
+      isDirty = false;
+      clearDraft(draftKey);
+      setStatus('Успешно сохранено в GitHub!');
+    } catch (e) {
+      // при ошибке изменения остаются несохранёнными
+      setStatus(e.message, true);
+    }
+  }
+</script>
+</body>
+</html>
