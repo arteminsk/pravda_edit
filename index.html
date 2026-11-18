@@ -405,15 +405,27 @@
 
     // в режиме «только активная рамка» клик по картинке вне рамки снимает выбор вместе с последней рамкой
     pane.addEventListener('click', (e) => {
-      if (suppressClick || !boxesOnlyActive) return;
+      if (suppressClick || !boxesOnlyActive || editingIdx !== null) return;
       if (e.target.closest('.bbox')) return;
-      if (editingIdx !== null) {
-        setStatus('Сначала сохраните или отмените правку', true);
-        return;
-      }
       clearSelection();
     });
+
+    // Двойной клик по изображению (в том числе по рамке) возвращает ленту
+    // к блоку, который сейчас редактируется. Одиночный клик и перетаскивание не меняем.
+    pane.addEventListener('dblclick', () => {
+      if (editingIdx === null) return;
+      const card = document.getElementById('card-' + editingIdx);
+      if (card) ensureVisible(card, 'full');
+    });
   }
+
+  // Двойной клик в ленте, включая выпадающее меню, прокручивает к текущей правке.
+  // Одиночные клики остаются за штатными элементами управления.
+  document.getElementById('editor-pane').addEventListener('dblclick', () => {
+    if (editingIdx === null) return;
+    const card = document.getElementById('card-' + editingIdx);
+    if (card) ensureVisible(card, 'full');
+  });
 
   // ---------- GitHub ----------
 
@@ -551,7 +563,7 @@
         box.style.height = (y2 - y1) + 'px';
       }
       box.onclick = () => {
-        if (suppressClick) return;
+        if (suppressClick || editingIdx !== null) return;
         selectBlock(idx, 'box');
       };
       boxesLayer.appendChild(box);
@@ -606,8 +618,9 @@
     const btnAdd = makeBtn('＋', 'Добавить новое поле сверху', () => addBlockAbove(idx));
     btnAdd.classList.add('add');
     const btnEdit = makeBtn('✏️ Править', 'Править текст', () => startEdit(idx));
-    const btnCopy = makeBtn('📋 Копировать', 'Копировать текст', () => {
-      navigator.clipboard.writeText(block.block_content || '')
+    const btnCopy = makeBtn('📋 Копировать', 'Копировать только текст, без служебных полей и Markdown-заголовка', () => {
+      const plainText = parseContent(block.block_content || '').text;
+      navigator.clipboard.writeText(plainText)
         .then(() => setStatus('Скопировано'))
         .catch(() => setStatus('Не удалось скопировать', true));
     });
@@ -821,7 +834,11 @@
     const editor = document.createElement('div');
     editor.className = 'editor';
     editor.onclick = (e) => e.stopPropagation();
-    editor.ondblclick = (e) => e.stopPropagation();
+    editor.ondblclick = () => {
+      // Двойной клик по тексту или панели инструментов — вернуться к редактируемому блоку.
+      const activeCard = document.getElementById('card-' + editingIdx);
+      if (activeCard) ensureVisible(activeCard, 'full');
+    };
 
     const bar = document.createElement('div');
     bar.className = 'etoolbar';
@@ -966,14 +983,18 @@
 
   // ---------- перемещение ----------
 
-  // Ничего не прокручивается: колонка и картинка остаются там, где были.
-  // Исключение одно: если после сдвига карточка ушла за край окна, её возвращают в поле зрения
-  // минимальной прокруткой (иначе при серии Ctrl+↑/↓ блок можно потерять из виду).
+  // Активный блок остаётся на том же месте экрана. Если он был виден частично,
+  // сначала минимально прокручиваем ленту, чтобы показать его целиком.
   function moveBlock(idx, dir) {
     const j = idx + dir;
     if (j < 0 || j >= blocks.length) return;
 
-    // если блок сейчас правится, переносим черновик вместе с ним
+    const pane = document.getElementById('editor-pane');
+    const currentCard = document.getElementById('card-' + idx);
+    if (currentCard) ensureVisible(currentCard, 'full');
+    const anchorTop = currentCard ? currentCard.getBoundingClientRect().top : null;
+
+    // Если блок сейчас правится, переносим черновик вместе с ним.
     let draft = null;
     if (editingIdx === idx) {
       const ta = document.querySelector('#card-' + idx + ' textarea');
@@ -988,7 +1009,12 @@
     blocks[j] = tmp;
     renumberOrder();
 
-    renderWorkspace(); // прокрутка колонки сохраняется
+    renderWorkspace();
+    const movedCard = document.getElementById('card-' + j);
+    if (movedCard && anchorTop !== null) {
+      const newTop = movedCard.getBoundingClientRect().top;
+      pane.scrollTop += newTop - anchorTop;
+    }
     selectBlock(j, 'move');
     if (draft) startEdit(j, draft);
     markDirty();
